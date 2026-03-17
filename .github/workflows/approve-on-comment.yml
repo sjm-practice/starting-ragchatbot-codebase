@@ -1,0 +1,20 @@
+name: Approve PR by comment
+
+on:
+  issue_comment:
+    types: [created] # only when a new comment is added
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  dispatch:
+    # Only run if the comment is on a pull request (not a plain issue)
+    if: ${{ github.event.issue.pull_request }}
+    uses: sjm-practice/.github/.github/workflows/approve-on-comment-reusable.yml@main
+    with:
+      commenter: ${{ github.event.comment.user.login }}
+      comment_body: ${{ github.event.comment.body }}
+      pull_number: ${{ github.event.issue.number }}
