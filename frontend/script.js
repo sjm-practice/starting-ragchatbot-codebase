@@ -131,7 +131,7 @@ function addMessage(content, type, sources = null, isWelcome = false) {
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
-                <div class="sources-content">${sourceItems.join(', ')}</div>
+                <div class="sources-content">${sourceItems.join('')}</div>
             </details>
         `;
     }
