@@ -120,7 +120,7 @@ class TestGenerateResponseDirectAnswer:
 
 
 # ---------------------------------------------------------------------------
-# generate_response() — tool_use path
+# generate_response() — single tool-use round
 # ---------------------------------------------------------------------------
 
 class TestGenerateResponseToolUse:
@@ -169,7 +169,8 @@ class TestGenerateResponseToolUse:
         )
         assert mock_client.messages.create.call_count == 2
 
-    def test_second_api_call_excludes_tools(self, generator_with_tool):
+    def test_second_api_call_includes_tools(self, generator_with_tool):
+        """After round 1 there is still a round remaining, so tools must be present in Call 2."""
         gen, mock_client, tool_manager = generator_with_tool
         gen.generate_response(
             query="What is RAG?",
@@ -177,8 +178,8 @@ class TestGenerateResponseToolUse:
             tool_manager=tool_manager,
         )
         second_call_kwargs = mock_client.messages.create.call_args_list[1][1]
-        assert "tools" not in second_call_kwargs
-        assert "tool_choice" not in second_call_kwargs
+        assert "tools" in second_call_kwargs
+        assert "tool_choice" in second_call_kwargs
 
     def test_tool_result_message_has_correct_format(self, generator_with_tool):
         """
@@ -208,3 +209,136 @@ class TestGenerateResponseToolUse:
         assert result_block["type"] == "tool_result"
         assert result_block["tool_use_id"] == "tu_abc123"
         assert result_block["content"] == "RAG stands for Retrieval-Augmented Generation."
+
+
+# ---------------------------------------------------------------------------
+# generate_response() — two sequential tool-use rounds
+# ---------------------------------------------------------------------------
+
+class TestTwoRoundToolUse:
+
+    @pytest.fixture
+    def two_round_setup(self):
+        with patch("ai_generator.anthropic.Anthropic") as MockAnthropic:
+            client_instance = MockAnthropic.return_value
+            r1 = make_tool_use_response(tool_id="tu_round1", tool_input={"query": "outline of course X"})
+            r2 = make_tool_use_response(tool_id="tu_round2", tool_input={"query": "same topic as lesson 4"})
+            final = make_text_response("Here is the complete answer.")
+            client_instance.messages.create.side_effect = [r1, r2, final]
+
+            tool_manager = MagicMock()
+            tool_manager.execute_tool.return_value = "some result"
+
+            gen = AIGenerator(api_key="test-key", model="claude-sonnet-4-6")
+            yield gen, client_instance, tool_manager
+
+    def _run(self, gen, tool_manager):
+        return gen.generate_response(
+            query="Find a course covering the same topic as lesson 4 of course X",
+            tools=[{"name": "search_course_content"}],
+            tool_manager=tool_manager,
+        )
+
+    def test_three_api_calls_made_on_two_rounds(self, two_round_setup):
+        gen, mock_client, tool_manager = two_round_setup
+        self._run(gen, tool_manager)
+        assert mock_client.messages.create.call_count == 3
+
+    def test_tool_manager_called_twice(self, two_round_setup):
+        gen, mock_client, tool_manager = two_round_setup
+        self._run(gen, tool_manager)
+        assert tool_manager.execute_tool.call_count == 2
+
+    def test_final_text_returned_after_two_rounds(self, two_round_setup):
+        gen, mock_client, tool_manager = two_round_setup
+        result = self._run(gen, tool_manager)
+        assert result == "Here is the complete answer."
+
+    def test_second_call_includes_tools(self, two_round_setup):
+        """Call 2 must include tools — round 1 consumed, round 2 still available."""
+        gen, mock_client, tool_manager = two_round_setup
+        self._run(gen, tool_manager)
+        second_call_kwargs = mock_client.messages.create.call_args_list[1][1]
+        assert "tools" in second_call_kwargs
+        assert "tool_choice" in second_call_kwargs
+
+    def test_synthesis_call_excludes_tools(self, two_round_setup):
+        """Call 3 (synthesis after both rounds) must not include tools."""
+        gen, mock_client, tool_manager = two_round_setup
+        self._run(gen, tool_manager)
+        third_call_kwargs = mock_client.messages.create.call_args_list[2][1]
+        assert "tools" not in third_call_kwargs
+        assert "tool_choice" not in third_call_kwargs
+
+    def test_message_history_has_both_rounds(self, two_round_setup):
+        """Call 3 messages must contain the full two-round history:
+        original user msg + assistant r1 + user tool_result r1
+        + assistant r2 + user tool_result r2 = 5 messages total."""
+        gen, mock_client, tool_manager = two_round_setup
+        self._run(gen, tool_manager)
+        third_call_kwargs = mock_client.messages.create.call_args_list[2][1]
+        messages = third_call_kwargs["messages"]
+        assert len(messages) == 5
+
+
+# ---------------------------------------------------------------------------
+# generate_response() — tool execution error handling
+# ---------------------------------------------------------------------------
+
+class TestToolExecutionError:
+
+    @pytest.fixture
+    def error_setup(self):
+        with patch("ai_generator.anthropic.Anthropic") as MockAnthropic:
+            client_instance = MockAnthropic.return_value
+            tool_response = make_tool_use_response()
+            final_response = make_text_response("I was unable to retrieve the information.")
+            client_instance.messages.create.side_effect = [tool_response, final_response]
+
+            tool_manager = MagicMock()
+            tool_manager.execute_tool.side_effect = Exception("DB unavailable")
+
+            gen = AIGenerator(api_key="test-key", model="claude-sonnet-4-6")
+            yield gen, client_instance, tool_manager
+
+    def _run(self, gen, tool_manager):
+        return gen.generate_response(
+            query="What is RAG?",
+            tools=[{"name": "search_course_content"}],
+            tool_manager=tool_manager,
+        )
+
+    def test_returns_string_on_tool_error(self, error_setup):
+        gen, mock_client, tool_manager = error_setup
+        result = self._run(gen, tool_manager)
+        assert isinstance(result, str)
+
+    def test_two_api_calls_on_error(self, error_setup):
+        """Error terminates the loop immediately — no second tool round attempted."""
+        gen, mock_client, tool_manager = error_setup
+        self._run(gen, tool_manager)
+        assert mock_client.messages.create.call_count == 2
+
+    def test_error_result_block_sent_to_claude(self, error_setup):
+        """Even on failure a tool_result block must be sent — the API requires it."""
+        gen, mock_client, tool_manager = error_setup
+        self._run(gen, tool_manager)
+        second_call_kwargs = mock_client.messages.create.call_args_list[1][1]
+        messages = second_call_kwargs["messages"]
+
+        tool_result_messages = [
+            m for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+        ]
+        assert len(tool_result_messages) == 1
+        result_block = tool_result_messages[0]["content"][0]
+        assert result_block["type"] == "tool_result"
+        assert result_block["tool_use_id"] == "tu_abc123"
+
+    def test_synthesis_call_excludes_tools_on_error(self, error_setup):
+        """After an error, the follow-up synthesis call must not include tools."""
+        gen, mock_client, tool_manager = error_setup
+        self._run(gen, tool_manager)
+        second_call_kwargs = mock_client.messages.create.call_args_list[1][1]
+        assert "tools" not in second_call_kwargs
+        assert "tool_choice" not in second_call_kwargs
