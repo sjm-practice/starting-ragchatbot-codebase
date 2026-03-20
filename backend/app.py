@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import os
@@ -52,6 +53,15 @@ class CourseStats(BaseModel):
     course_titles: List[str]
 
 # API Endpoints
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve Claude favicon to avoid 404s from direct browser requests"""
+    favicon_path = "../frontend/favicon.svg"
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path, media_type="image/svg+xml")
+    return RedirectResponse(url="/favicon.svg")
+
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
