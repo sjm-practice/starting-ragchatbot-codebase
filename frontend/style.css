@@ -804,7 +804,7 @@ details[open] .suggested-header::before {
     height: 40px;
     border-radius: 50%;
     border: 1px solid var(--border-color);
-    background: var(--surface);
+    background: pink;
     color: var(--text-secondary);
     cursor: pointer;
     display: flex;
@@ -814,7 +814,7 @@ details[open] .suggested-header::before {
 }
 
 .theme-toggle-btn:hover {
-    background: var(--surface-hover);
+    background: pink;
     color: var(--text-primary);
     transform: rotate(20deg);
 }
