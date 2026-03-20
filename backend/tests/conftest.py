@@ -2,7 +2,11 @@
 import sys
 import os
 import pytest
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 # Add backend directory to path so imports work
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,6 +42,77 @@ def error_search_results():
     return SearchResults.empty(
         "Search error: Number of requested results 5 is greater than number of elements in index 0"
     )
+
+
+# ---------------------------------------------------------------------------
+# API test app helpers
+# ---------------------------------------------------------------------------
+
+class _QueryRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+
+
+class _QueryResponse(BaseModel):
+    answer: str
+    sources: List[Dict[str, Any]]
+    session_id: str
+
+
+class _CourseStats(BaseModel):
+    total_courses: int
+    course_titles: List[str]
+
+
+def _build_test_app(rag) -> FastAPI:
+    """
+    Build a minimal FastAPI app wired to `rag`.
+
+    Mirrors the endpoints in app.py without the static file mount so tests
+    can import this without a frontend/ directory present.
+    """
+    app = FastAPI()
+
+    @app.post("/api/query", response_model=_QueryResponse)
+    async def query_documents(request: _QueryRequest):
+        try:
+            session_id = request.session_id or rag.session_manager.create_session()
+            answer, sources = rag.query(request.query, session_id)
+            return _QueryResponse(answer=answer, sources=sources, session_id=session_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/courses", response_model=_CourseStats)
+    async def get_course_stats():
+        try:
+            analytics = rag.get_course_analytics()
+            return _CourseStats(
+                total_courses=analytics["total_courses"],
+                course_titles=analytics["course_titles"],
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return app
+
+
+@pytest.fixture
+def mock_rag_system():
+    """Mocked RAGSystem with sensible default return values."""
+    rag = MagicMock()
+    rag.query.return_value = ("Test answer.", [])
+    rag.get_course_analytics.return_value = {
+        "total_courses": 2,
+        "course_titles": ["Course A", "Course B"],
+    }
+    rag.session_manager.create_session.return_value = "generated-session-id"
+    return rag
+
+
+@pytest.fixture
+def test_client(mock_rag_system):
+    """TestClient backed by the minimal test app with a mocked RAGSystem."""
+    return TestClient(_build_test_app(mock_rag_system))
 
 
 @pytest.fixture
